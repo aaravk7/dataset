@@ -31,6 +31,8 @@ public class State {
             Table<Integer, Integer, String> dyn,
             int processPeriod,
             int labPeriod,
+            int pulpeyePeriod,
+            int qcsPeriod,
             int finalRow,
             int numInputs,
             int numOutputs,
