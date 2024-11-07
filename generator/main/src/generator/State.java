@@ -267,4 +267,88 @@ public class State {
         double firstCurrent = newOut * lag1 + firstPrior * (1 - lag1);
         return firstCurrent * lag2 + out1 * (1 - lag2);
     }
+
+    private ProcessValues getProcessValues(int row) {
+        if (row > dynRow) {
+            dynamicValues(row, searchCol("MV_ThinStockFlow", input), true);
+            dynamicValues(row, searchCol("MV_ThinStockConsistency", input), true);
+            dynamicValues(row, searchCol("MV_PressLoad", input), true);
+            dynamicValues(row, searchCol("MV_SteamPressure", input), true);
+            dynamicValues(row, searchCol("MV_MachineSpeed", state), false);
+            dynamicValues(row, searchCol("PulpEye_BlendFreeness", state), false);
+            
+            return new ProcessValues(
+                Double.parseDouble(dyn.get(3, searchCol("MV_ThinStockFlow", dyn))),
+                Double.parseDouble(dyn.get(3, searchCol("MV_ThinStockConsistency", dyn))),
+                Double.parseDouble(dyn.get(3, searchCol("MV_PressLoad", dyn))),
+                Double.parseDouble(dyn.get(3, searchCol("MV_SteamPressure", dyn))),
+                Double.parseDouble(dyn.get(3, searchCol("MV_MachineSpeed", dyn))),
+                Double.parseDouble(dyn.get(3, searchCol("PulpEye_BlendFreeness", dyn)))
+            );
+        } else {
+            String blendFreeness = data.get(row, searchCol("PulpEye_BlendFreeness", data));
+            return new ProcessValues(
+                getDoubleValue(row, "MV_ThinStockFlow"),
+                getDoubleValue(row, "MV_ThinStockConsistency"),
+                getDoubleValue(row, "MV_PressLoad"),
+                getDoubleValue(row, "MV_SteamPressure"),
+                getDoubleValue(row, "MV_MachineSpeed"),
+                blendFreeness.isEmpty() ? 0.0 : Double.parseDouble(blendFreeness)
+            );
+        }
+    }
+
+    private void calculateQCSValues(int row, ProcessValues values, 
+                                  double caliperMax, double caliperSlope, double caliperNoise) {
+        double fiberToHeadbox = values.thinStockFlow * values.thinStockConsistency * 8.3 / 100;
+        double waterToHeadbox = values.thinStockFlow * 8.3 - fiberToHeadbox;
+        double wireDrainage = 5 + 90 * (1 - 1 / Math.exp(values.blendFreeness));
+        double waterToPress = waterToHeadbox * wireDrainage / 100;
+        double pressDrainage = 80 * (1 - 1 / Math.exp(values.pressLoad / 200));
+        double waterToDryers = waterToPress * pressDrainage / 100;
+        double moistureToDryers = waterToDryers / fiberToHeadbox;
+        double moistureAsymptote = 2.5 + values.machineSpeed / 500;
+        
+        // Calculate and set moisture
+        data.put(row, searchCol("QCS_Moisture", data), 
+                String.valueOf(moistureAsymptote + 
+                (moistureToDryers - moistureAsymptote) / Math.exp(values.steamPressure / 25)));
+
+        // Calculate bone dry weight
+        double boneDryWeight = values.machineSpeed <= 1 ? 0 : 
+                             fiberToHeadbox * 3300 / (values.machineSpeed * trim);
+        data.put(row, searchCol("QCS_BoneDryWeight", data), String.valueOf(boneDryWeight));
+
+        // Calculate basis weight
+        double moisture = Double.parseDouble(data.get(row, searchCol("QCS_Moisture", data)));
+        data.put(row, searchCol("QCS_BasisWeight", data), 
+                String.valueOf(boneDryWeight * (1 + moisture / 100)));
+
+        // Calculate caliper
+        double capMaxCalc = caliperMax * boneDryWeight / 50;
+        double capMinCalc = capMaxCalc / 2;
+        double noise = calcNoise(caliperNoise);
+        data.put(row, searchCol("QCS_Caliper", data), 
+                String.valueOf(capMinCalc + 
+                (capMaxCalc - capMinCalc) / Math.exp((values.pressLoad - 700) * caliperSlope) + noise));
+    }
+
+    private double gainModel(String name, int stateRow, int row) {
+        double gain = 0;
+        for (String i : labOutputs.keySet()) {
+            if (labOutputs.get(i).get(1, 1).equals(name)) {
+                for (int j = 2; j <= labOutputs.get(i).rowKeySet().size(); j++) {
+                    String varName = labOutputs.get(i).get(j, 1);
+                    double coeff = Double.parseDouble(labOutputs.get(i).get(j, 2));
+                    if (j <= stateRow) {
+                        gain += coeff * getDoubleValue(row, varName);
+                    } else {
+                        gain += coeff * getDoubleValue(row - 1, varName);
+                    }
+                }
+                break;
+            }
+        }
+        return gain;
+    }
 } 
